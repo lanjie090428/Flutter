@@ -1,0 +1,301 @@
+import 'package:flutter/material.dart';
+
+import '../../format.dart';
+import '../user_avatar.dart';
+import '../user_name_text.dart';
+
+/// 主楼与子级回复的图标尺寸，子级小一号。
+double threadRowIconSize(bool isChild) => isChild ? 16.0 : 18.0;
+
+/// 社区回复与评论共用的一行。
+/// 主楼头像 40、正文缩进 56；子级头像 24、正文顶格。
+/// 点赞/回复/删除各页不同，由 [actions] 传入，时间戳固定占左侧。
+/// 文本选择靠列表外层的 SelectionArea，逐行包会给每行装上一套手势识别与选区注册。
+class ThreadReplyRow extends StatelessWidget {
+  const ThreadReplyRow({
+    super.key,
+    required this.userId,
+    required this.userName,
+    required this.avatarUrl,
+    required this.content,
+    required this.publishedAt,
+    required this.isChild,
+    this.replyToUserName,
+    this.userDeleted = false,
+    this.replyToUserDeleted = false,
+    this.badge,
+    this.highlighted = false,
+    this.actions = const <Widget>[],
+  });
+
+  /// 用户 ID，0 表示未知作者，头像不可点。
+  final int userId;
+  final String userName;
+  final String avatarUrl;
+  final String content;
+  final DateTime? publishedAt;
+  final bool isChild;
+  final String? replyToUserName;
+  final bool userDeleted;
+  final bool replyToUserDeleted;
+  final Widget? badge;
+  final bool highlighted;
+  final List<Widget> actions;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final visibleUserName = displayUserName(userName, deleted: userDeleted);
+    final hasReplyTarget = replyToUserName != null;
+    final double indent = isChild ? 0 : 56;
+
+    final Widget body = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        if (isChild)
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: <Widget>[
+              UserAvatar(
+                url: avatarUrl,
+                name: visibleUserName,
+                size: 24,
+                userId: userId,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Row(
+                  children: <Widget>[
+                    Flexible(
+                      child: UserNameText(
+                        name: userName,
+                        deleted: userDeleted,
+                        style: TextStyle(
+                          fontSize: 12,
+                          height: 16 / 12,
+                          fontWeight: FontWeight.w700,
+                          color: colors.onSurface,
+                        ),
+                      ),
+                    ),
+                    if (hasReplyTarget) ...<Widget>[
+                      Text(
+                        ' 回复了 ',
+                        style: TextStyle(
+                          fontSize: 12,
+                          height: 16 / 12,
+                          color: colors.onSurfaceVariant,
+                        ),
+                      ),
+                      Flexible(
+                        child: UserNameText(
+                          name: replyToUserName!,
+                          deleted: replyToUserDeleted,
+                          style: TextStyle(
+                            fontSize: 12,
+                            height: 16 / 12,
+                            color: colors.onSurfaceVariant,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              ?badge,
+            ],
+          )
+        else
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              UserAvatar(
+                url: avatarUrl,
+                name: visibleUserName,
+                size: 40,
+                userId: userId,
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Row(
+                      children: <Widget>[
+                        Flexible(
+                          child: UserNameText(
+                            name: userName,
+                            deleted: userDeleted,
+                            style: TextStyle(
+                              fontSize: 14,
+                              height: 19 / 14,
+                              fontWeight: FontWeight.w700,
+                              color: colors.onSurface,
+                            ),
+                          ),
+                        ),
+                        if (badge != null) ...<Widget>[
+                          const SizedBox(width: 8),
+                          badge!,
+                        ],
+                      ],
+                    ),
+                    if (hasReplyTarget) ...<Widget>[
+                      const SizedBox(height: 4),
+                      Row(
+                        children: <Widget>[
+                          Text(
+                            '回复 ',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: colors.primary,
+                            ),
+                          ),
+                          Flexible(
+                            child: UserNameText(
+                              name: replyToUserName!,
+                              deleted: replyToUserDeleted,
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                                color: colors.primary,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ],
+          ),
+        const SizedBox(height: 4),
+        Padding(
+          padding: EdgeInsets.only(left: indent),
+          child: Text(
+            content.trim(),
+            style: TextStyle(
+              fontSize: 14,
+              height: 19 / 14,
+              color: colors.onSurface,
+            ),
+          ),
+        ),
+        Padding(
+          padding: EdgeInsets.only(left: indent),
+          child: SizedBox(
+            height: 32,
+            child: Row(
+              children: <Widget>[
+                Expanded(
+                  child: Text(
+                    formatRelativeTimeFine(publishedAt),
+                    style: TextStyle(
+                      fontSize: isChild ? 10 : 12,
+                      color: colors.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+                ...actions,
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+
+    final EdgeInsets padding = EdgeInsets.symmetric(vertical: isChild ? 2 : 8);
+    if (!highlighted) return Padding(padding: padding, child: body);
+    // 高亮只有深链定位那一行会出现，隐式动画容器只包这一行，别让整列都进动画。
+    return TweenAnimationBuilder<double>(
+      tween: Tween<double>(begin: 0, end: 1),
+      duration: const Duration(milliseconds: 180),
+      child: body,
+      builder: (context, t, child) => Container(
+        decoration: BoxDecoration(
+          color: Color.lerp(Colors.transparent, colors.primaryContainer, t),
+          border: Border(
+            left: BorderSide(color: colors.primary, width: 3).scale(t),
+          ),
+          borderRadius: BorderRadius.circular(12 * t),
+        ),
+        padding: padding.copyWith(left: 6 * t, right: 6 * t),
+        child: child,
+      ),
+    );
+  }
+}
+
+/// 回复分组容器：主楼之间用发丝线分隔，子级挂在左竖线上缩进 56。
+/// [closesGroup] 标记一个主楼及其子级的最后一行。
+class ThreadReplyGroup extends StatelessWidget {
+  const ThreadReplyGroup({
+    super.key,
+    required this.isChild,
+    required this.closesGroup,
+    required this.child,
+  });
+
+  final bool isChild;
+  final bool closesGroup;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final BorderSide bottom = closesGroup
+        ? BorderSide(color: colors.outlineVariant, width: 0.5)
+        : BorderSide.none;
+    if (!isChild) {
+      return Container(
+        padding: EdgeInsets.only(top: 8, bottom: closesGroup ? 8 : 0),
+        decoration: BoxDecoration(border: Border(bottom: bottom)),
+        child: child,
+      );
+    }
+    return Container(
+      margin: const EdgeInsets.only(left: 56),
+      padding: EdgeInsets.only(left: 12, top: 6, bottom: closesGroup ? 8 : 0),
+      decoration: BoxDecoration(
+        border: Border(
+          left: BorderSide(color: colors.outlineVariant, width: 2),
+          bottom: bottom,
+        ),
+      ),
+      child: child,
+    );
+  }
+}
+
+/// 回复行右侧的图标按钮，尺寸固定 32×32 以对齐时间戳基线。
+class ThreadRowIconButton extends StatelessWidget {
+  const ThreadRowIconButton({
+    super.key,
+    required this.icon,
+    required this.tooltip,
+    required this.iconSize,
+    required this.onPressed,
+    this.color,
+  });
+
+  final IconData icon;
+  final String tooltip;
+  final double iconSize;
+  final VoidCallback? onPressed;
+  final Color? color;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    width: 32,
+    height: 32,
+    child: IconButton(
+      icon: Icon(icon, color: color),
+      iconSize: iconSize,
+      tooltip: tooltip,
+      onPressed: onPressed,
+      padding: EdgeInsets.zero,
+    ),
+  );
+}

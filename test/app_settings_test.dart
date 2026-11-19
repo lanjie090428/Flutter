@@ -80,6 +80,21 @@ void main() {
     expect(restored.comicReader.statusPillsEnabled, isFalse);
   });
 
+  test('小说正文字体选择可持久化，旧设置默认系统字体', () {
+    expect(
+      ReaderPreferences.decode(const <String, dynamic>{}).font,
+      ReaderFontSetting.system,
+    );
+    final settings = const AppSettings().copyWith(
+      novelReader: const ReaderPreferences(
+        font: ReaderFontSetting.zhuqueFangsong,
+      ),
+    );
+    final restored = AppSettings.decode(settings.encode());
+    expect(restored.novelReader.font, ReaderFontSetting.zhuqueFangsong);
+    expect(restored.comicReader.font, ReaderFontSetting.system);
+  });
+
   test('小说和漫画分别保存翻页动画', () {
     final settings = const AppSettings().copyWith(
       novelReader: const ReaderPreferences(

@@ -22,6 +22,9 @@ enum ReaderPageTurnAnimation { none, slide }
 
 enum ReaderBackgroundMode { auto, paper, custom }
 
+/// 小说正文的显示字体；章节混淆字体始终作为缺字回退字体保留。
+enum ReaderFontSetting { system, zhuqueFangsong }
+
 /// 阅读页单独的亮暗，默认跟随全局主题。
 enum ReaderThemeSetting { followApp, light, dark }
 
@@ -77,6 +80,7 @@ class ReaderPreferences {
     this.theme = ReaderThemeSetting.followApp,
     this.volumeKeyPagingEnabled = false,
     this.viewMode = ReaderViewMode.paged,
+    this.font = ReaderFontSetting.system,
   });
 
   final ReaderBackgroundMode backgroundMode;
@@ -89,6 +93,7 @@ class ReaderPreferences {
   final ReaderThemeSetting theme;
   final bool volumeKeyPagingEnabled;
   final ReaderViewMode viewMode;
+  final ReaderFontSetting font;
 
   ReaderPreferences copyWith({
     ReaderBackgroundMode? backgroundMode,
@@ -101,6 +106,7 @@ class ReaderPreferences {
     ReaderThemeSetting? theme,
     bool? volumeKeyPagingEnabled,
     ReaderViewMode? viewMode,
+    ReaderFontSetting? font,
   }) => ReaderPreferences(
     backgroundMode: backgroundMode ?? this.backgroundMode,
     backgroundColorValue: backgroundColorValue ?? this.backgroundColorValue,
@@ -113,6 +119,7 @@ class ReaderPreferences {
     volumeKeyPagingEnabled:
         volumeKeyPagingEnabled ?? this.volumeKeyPagingEnabled,
     viewMode: viewMode ?? this.viewMode,
+    font: font ?? this.font,
   );
 
   static final RegExp _hexPattern = RegExp(r'^#[0-9A-Fa-f]{6}$');
@@ -151,6 +158,11 @@ class ReaderPreferences {
         values['viewMode'],
         ReaderViewMode.paged,
       ),
+      font: _enumFromName(
+        ReaderFontSetting.values,
+        values['font'],
+        ReaderFontSetting.system,
+      ),
     );
   }
 
@@ -165,6 +177,7 @@ class ReaderPreferences {
     'theme': theme.name,
     'volumeKeyPagingEnabled': volumeKeyPagingEnabled,
     'viewMode': viewMode.name,
+    'font': font.name,
   };
 
   @override
@@ -179,7 +192,8 @@ class ReaderPreferences {
       other.statusPillsEnabled == statusPillsEnabled &&
       other.theme == theme &&
       other.volumeKeyPagingEnabled == volumeKeyPagingEnabled &&
-      other.viewMode == viewMode;
+      other.viewMode == viewMode &&
+      other.font == font;
 
   @override
   int get hashCode => Object.hash(
@@ -193,6 +207,7 @@ class ReaderPreferences {
     theme,
     volumeKeyPagingEnabled,
     viewMode,
+    font,
   );
 }
 

@@ -1,0 +1,108 @@
+import 'dart:async';
+
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../../core/network/api_error.dart';
+import '../api/api_client.dart';
+import '../api/models.dart';
+import '../providers.dart';
+import 'shelf_draft.dart';
+import 'shelf_books.dart';
+
+/// 书架错误文案，草稿代数抛出的 [ArgumentError] 消息直接展示给用户。
+String describeShelfError(Object error, {String fallback = '书架暂时不可用。'}) {
+  if (error is ArgumentError) return error.message?.toString() ?? fallback;
+  return describeApiError(
+    error,
+    fallback: fallback,
+    auth: '登录状态已过期，请重新登录后继续。',
+    network: '网络连接不可用，请检查后重试。',
+    normalize: true,
+  );
+}
+
+/// 书架仓库：加载、保存（串行队列 + 代际号）与单本增删。
+class ShelfController extends AsyncNotifier<ShelfSnapshot?> {
+  ApiClient get _api => ref.read(apiClientProvider);
+
+  int _mutationGeneration = 0;
+  Future<void> _saveQueue = Future<void>.value();
+
+  @override
+  Future<ShelfSnapshot?> build() async {
+    // 只看登录与否，token 刷新途中的 refreshing 快照不该把书架拆掉重拉。
+    final authenticated = ref.watch(
+      authSnapshotProvider.select((snapshot) => snapshot.isAuthenticated),
+    );
+    if (!authenticated) return null;
+    return _load();
+  }
+
+  Future<ShelfSnapshot> _load() async {
+    await _saveQueue;
+    final generation = _mutationGeneration;
+    final shelf = await _api.getBookShelf();
+    final snapshot = ShelfSnapshot(items: sortShelfItems(shelf.items));
+    if (generation != _mutationGeneration) {
+      return state.value ?? snapshot;
+    }
+    return snapshot;
+  }
+
+  Future<void> reload() async {
+    ref.invalidate(shelfBookCacheProvider);
+    state = await AsyncValue.guard(() async {
+      if (!ref.read(authSnapshotProvider).isAuthenticated) return null;
+      return _load();
+    });
+  }
+
+  Future<ShelfSnapshot> save(ShelfDraft draft) {
+    final generation = ++_mutationGeneration;
+    final normalized = ShelfDraft(items: normalizeShelfIndexes(draft.items));
+    final operation = _saveQueue.then((_) async {
+      await _api.saveBookShelf(UserShelf(items: normalized.items));
+      final snapshot = ShelfSnapshot(items: normalized.items);
+      if (generation == _mutationGeneration) {
+        state = AsyncValue<ShelfSnapshot?>.data(snapshot);
+      }
+      return snapshot;
+    });
+    _saveQueue = operation.then((_) {}, onError: (_) {});
+    return operation;
+  }
+
+  /// 没有缓存快照时回源查询。
+  Future<bool> contains(int bookId) async {
+    final snapshot = state.value;
+    if (snapshot != null) return shelfContainsBook(snapshot.items, bookId);
+    final shelf = await _api.getBookShelf();
+    return shelfContainsBook(shelf.items, bookId);
+  }
+
+  /// 加入/移出书架，返回操作后是否在书架中；[type] 决定加入时写的条目类型。
+  Future<bool> toggleBook(int bookId, {required ShelfItemType type}) async {
+    if (bookId <= 0) throw ArgumentError('无效的书籍 ID。');
+    final shelf = await _api.getBookShelf();
+    final isInShelf = shelfContainsBook(shelf.items, bookId);
+    final items = isInShelf
+        ? shelf.items
+              .where((item) => !item.isBook || item.bookId != bookId)
+              .toList()
+        : <ShelfItem>[
+            ShelfItem.book(
+              type: type,
+              id: bookId,
+              index: -1,
+              parents: const <String>[],
+              updatedAt: DateTime.now().toUtc().toIso8601String(),
+            ),
+            ...shelf.items,
+          ];
+    await save(ShelfDraft(items: items));
+    return !isInShelf;
+  }
+}
+
+final AsyncNotifierProvider<ShelfController, ShelfSnapshot?> shelfProvider =
+    AsyncNotifierProvider<ShelfController, ShelfSnapshot?>(ShelfController.new);

@@ -1,0 +1,387 @@
+import 'dart:ui' as ui;
+
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
+
+import '../../app/list_detail.dart';
+import '../../core/network/api_error.dart';
+import '../../data/api/api_client.dart';
+import '../../data/api/models.dart';
+import '../../data/providers.dart';
+import '../../data/repositories/read_position_cache.dart';
+import '../../shared/format.dart';
+import '../../shared/widgets/app_dialogs.dart';
+import '../../shared/widgets/state_views.dart';
+import '../../shared/widgets/user_card_sheet.dart';
+import '../search/search_providers.dart';
+import 'book_providers.dart';
+import 'widgets/book_action_row.dart';
+import 'widgets/book_detail_hero.dart';
+import 'widgets/book_detail_skeleton.dart';
+import 'widgets/book_introduction.dart';
+import 'widgets/book_series_sheet.dart';
+import 'widgets/cover_palette_theme.dart';
+
+class BookDetailScreen extends ConsumerStatefulWidget {
+  const BookDetailScreen({super.key, required this.id});
+
+  final int id;
+
+  @override
+  ConsumerState<BookDetailScreen> createState() => _BookDetailScreenState();
+}
+
+class _BookDetailScreenState extends ConsumerState<BookDetailScreen> {
+  int get _request => widget.id;
+
+  Future<void> _openReader(BookDetailBundle bundle, int sortNum) async {
+    final isComic = bundle.isComic;
+    await context.push(
+      '/reader/${widget.id}/$sortNum${isComic ? '?type=Comic' : ''}',
+    );
+    // 阅读器把进度写入 ReadPositionCache，返回后需重建以刷新。
+    if (mounted) setState(() {});
+  }
+
+  void _openComments(BookDetailBundle bundle) {
+    context.openPage(
+      Uri(
+        path: '/book/${widget.id}/comments',
+        queryParameters: <String, String>{'title': bundle.detail.title},
+      ).toString(),
+    );
+  }
+
+  void _searchTag(String tag, bool isComic) {
+    ref
+        .read(bookSearchProvider.notifier)
+        .seed(query: tag, mode: BookSearchMode.tags, comic: isComic);
+    context.go('/search');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final settings = ref.watch(appSettingsProvider);
+    final async = ref.watch(bookDetailProvider(_request));
+    final bundle = async.value;
+
+    return CoverPaletteTheme(
+      coverUrl: bundle?.detail.coverUrl ?? '',
+      blurHash: bundle?.detail.coverPlaceholder,
+      settings: settings,
+      child: Builder(
+        builder: (themedContext) => Scaffold(
+          body: async.when(
+            loading: () => const BookDetailSkeleton(),
+            error: (error, _) => ErrorStateView(
+              title: '无法加载这本书',
+              message: error is ApiError ? error.message : '请稍后再试。',
+              onRetry: () => ref.invalidate(bookDetailProvider(_request)),
+              // 出错时正常态的 SliverAppBar 不渲染，这是页面上唯一的返回入口。
+              onBack: Navigator.canPop(context)
+                  ? () => Navigator.pop(context)
+                  : null,
+            ),
+            data: (value) => _body(themedContext, value),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _body(BuildContext context, BookDetailBundle bundle) {
+    final detail = bundle.detail;
+    final colors = Theme.of(context).colorScheme;
+    final hasOtherSeriesBooks = detail.series.any(
+      (book) => book.id != widget.id,
+    );
+    final position = ReadPositionCache.merge(widget.id, detail.readPosition);
+    final currentIndex = position == null
+        ? -1
+        : detail.chapters.indexWhere(
+            (chapter) => chapter.id == position.chapterId,
+          );
+
+    return CustomScrollView(
+      slivers: <Widget>[
+        SliverAppBar(
+          pinned: true,
+          expandedHeight: bookHeroHeight,
+          backgroundColor: colors.surface,
+          surfaceTintColor: Colors.transparent,
+          actions: <Widget>[
+            IconButton(
+              icon: const Icon(Icons.mode_comment_outlined),
+              tooltip: '评论',
+              onPressed: () => _openComments(bundle),
+            ),
+            PopupMenuButton<String>(
+              tooltip: '更多',
+              onSelected: (value) {
+                if (value == 'series') {
+                  showBookSeriesSheet(this.context, detail, widget.id);
+                  return;
+                }
+                final uploader = detail.user;
+                if (uploader == null || uploader.id <= 0) {
+                  showAppSnackBar(this.context, '这本书没有上传者资料。');
+                  return;
+                }
+                // 用 State 的 context，使弹窗沿用应用主题而非封面取色主题。
+                showUserCardSheet(
+                  this.context,
+                  userId: uploader.id,
+                  userName: uploader.userName,
+                  avatarUrl: uploader.avatarUrl,
+                );
+              },
+              itemBuilder: (_) => <PopupMenuEntry<String>>[
+                if (hasOtherSeriesBooks)
+                  const PopupMenuItem<String>(
+                    value: 'series',
+                    child: ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(Icons.library_books_outlined),
+                      title: Text('系列'),
+                    ),
+                  ),
+                const PopupMenuItem<String>(
+                  value: 'uploader',
+                  child: ListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(Icons.person_outline),
+                    title: Text('上传者'),
+                  ),
+                ),
+              ],
+            ),
+          ],
+          flexibleSpace: FlexibleSpaceBar(
+            background: BookHero(detail: detail),
+            collapseMode: CollapseMode.parallax,
+          ),
+        ),
+        SliverPadding(
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+          sliver: SliverList(
+            delegate: SliverChildListDelegate(<Widget>[
+              _stats(context, detail),
+              const SizedBox(height: 16),
+              BookActionRow(
+                bookId: widget.id,
+                bundle: bundle,
+                currentIndex: currentIndex,
+                onRead: (sortNum) => _openReader(bundle, sortNum),
+              ),
+              if (detail.introduction.trim().isNotEmpty)
+                BookIntroduction(detail: detail),
+              if (detail.classification.tags.isNotEmpty) _tags(context, bundle),
+              const SizedBox(height: 24),
+              _updateStrip(context, detail),
+              const SizedBox(height: 24),
+              Text(
+                '章节',
+                style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                  color: colors.onSurfaceVariant,
+                  letterSpacing: 0.5,
+                ),
+              ),
+              const SizedBox(height: 4),
+            ]),
+          ),
+        ),
+        SliverPadding(
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          sliver: SliverList(
+            delegate: SliverChildBuilderDelegate(
+              (context, index) => _chapterRow(
+                context,
+                bundle,
+                index,
+                isCurrent: index == currentIndex,
+              ),
+              childCount: detail.chapters.length,
+            ),
+          ),
+        ),
+        SliverToBoxAdapter(
+          child: SizedBox(height: 40 + MediaQuery.paddingOf(context).bottom),
+        ),
+      ],
+    );
+  }
+
+  Widget _stats(BuildContext context, BookDetail detail) {
+    final colors = Theme.of(context).colorScheme;
+    Widget chip(IconData icon, String label) => Container(
+      height: 26,
+      padding: const EdgeInsets.symmetric(horizontal: 10),
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerHighest.withValues(alpha: 0.71),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Icon(icon, size: 14, color: colors.onSurfaceVariant),
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w500,
+              color: colors.onSurfaceVariant,
+            ),
+          ),
+        ],
+      ),
+    );
+
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: <Widget>[
+        chip(Icons.favorite_border, '收藏 ${formatCount(detail.favoriteCount)}'),
+        chip(Icons.visibility_outlined, '阅读 ${formatCount(detail.viewCount)}'),
+        chip(Icons.schedule, formatRelativeTime(detail.lastUpdatedAt)),
+        chip(Icons.menu_book_outlined, '${detail.chapters.length} 章'),
+      ],
+    );
+  }
+
+  Widget _tags(BuildContext context, BookDetailBundle bundle) {
+    final tags = <String>{
+      for (final tag in bundle.detail.classification.tags)
+        if (tag.trim().isNotEmpty) tag.trim(),
+    }.toList();
+    if (tags.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 16),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 4,
+        children: <Widget>[
+          for (final tag in tags)
+            ActionChip(
+              label: Text(tag),
+              labelStyle: const TextStyle(fontSize: 13, height: 18 / 13),
+              labelPadding: const EdgeInsets.symmetric(horizontal: 4),
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              visualDensity: const VisualDensity(horizontal: -2, vertical: -4),
+              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              onPressed: () => _searchTag(tag, bundle.isComic),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _updateStrip(BuildContext context, BookDetail detail) {
+    final colors = Theme.of(context).colorScheme;
+    final chapter = detail.chapters.isNotEmpty
+        ? detail.chapters.last.title
+        : detail.lastUpdatedChapter;
+    final time = formatRelativeTime(detail.lastUpdatedAt);
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerHighest.withValues(alpha: 0.5),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: <Widget>[
+          Icon(Icons.bolt_outlined, size: 18, color: colors.onSurfaceVariant),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              chapter == null || chapter.isEmpty
+                  ? '最近更新：${time.isEmpty ? '时间未知' : time}'
+                  : '最近更新：${time.isEmpty ? '时间未知' : time} · $chapter',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 13,
+                height: 1.46,
+                color: colors.onSurfaceVariant,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _chapterRow(
+    BuildContext context,
+    BookDetailBundle bundle,
+    int index, {
+    required bool isCurrent,
+  }) {
+    final colors = Theme.of(context).colorScheme;
+    final chapter = bundle.detail.chapters[index];
+    return InkWell(
+      onTap: () => _openReader(bundle, index + 1),
+      child: Container(
+        constraints: const BoxConstraints(minHeight: 48),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        child: Row(
+          children: <Widget>[
+            SizedBox(
+              width: 32,
+              child: Text(
+                '${index + 1}',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: isCurrent ? FontWeight.w700 : FontWeight.w500,
+                  letterSpacing: 0.5,
+                  color: isCurrent ? colors.primary : colors.onSurfaceVariant,
+                  fontFeatures: const <ui.FontFeature>[
+                    ui.FontFeature.tabularFigures(),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Text(
+                chapter.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 14,
+                  height: 1.5,
+                  letterSpacing: 0.5,
+                  fontWeight: isCurrent ? FontWeight.w600 : FontWeight.w400,
+                  color: isCurrent ? colors.primary : colors.onSurface,
+                ),
+              ),
+            ),
+            if (isCurrent) ...<Widget>[
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                decoration: BoxDecoration(
+                  color: colors.primaryContainer,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  '当前',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w500,
+                    letterSpacing: 0.5,
+                    color: colors.onPrimaryContainer,
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}

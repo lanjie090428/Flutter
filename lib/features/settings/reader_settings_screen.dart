@@ -146,6 +146,19 @@ class ReaderSettingsContent extends ConsumerWidget {
             SettingsSection(
               title: '排版',
               children: <Widget>[
+                SettingsPickerRow<ReaderFontSetting>(
+                  title: '正文字体',
+                  description: '普通文字使用朱雀仿宋；章节混淆字形仍由章节字体绘制',
+                  icon: Icons.font_download_outlined,
+                  value: reader.font,
+                  options: const <(ReaderFontSetting, String)>[
+                    (ReaderFontSetting.system, '系统默认'),
+                    (ReaderFontSetting.zhuqueFangsong, '朱雀仿宋'),
+                  ],
+                  onChanged: (value) => updateReader(
+                    (reader) => reader.copyWith(font: value),
+                  ),
+                ),
                 SettingsSliderRow(
                   title: '字号',
                   description: '小说阅读器使用的文字大小',

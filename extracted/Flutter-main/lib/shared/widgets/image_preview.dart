@@ -1,0 +1,648 @@
+import 'dart:async';
+import 'dart:math' as math;
+import 'dart:ui' as ui;
+
+import 'package:cached_network_image/cached_network_image.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_widget_from_html_core/flutter_widget_from_html_core.dart';
+import 'package:photo_view/photo_view.dart';
+
+import '../../data/api/endpoints.dart';
+import '../../data/api/decode.dart';
+import '../../data/providers.dart';
+import 'app_dialogs.dart';
+import 'book_image.dart';
+import '../image_cache.dart';
+import '../image_export.dart';
+import '../image_sizing.dart';
+
+/// 取组件当前在屏幕上的矩形，作为预览动画的起点/终点。
+Rect? globalRectOf(BuildContext context) {
+  final object = context.findRenderObject();
+  if (object is! RenderBox || !object.hasSize || !object.attached) return null;
+  return object.localToGlobal(Offset.zero) & object.size;
+}
+
+/// 图片地址附带的 BlurHash 与原始尺寸，用于在网络请求完成前占位。
+typedef ContentImageMetadata = ({String? blurHash, Size? size});
+
+ContentImageMetadata contentImageMetadata(String url) {
+  final size = extractImageSize(url);
+  return (
+    blurHash: extractBlurHashPlaceholder(url),
+    size: size == null
+        ? null
+        : Size(size.width.toDouble(), size.height.toDouble()),
+  );
+}
+
+/// 正文里的图片地址常是站内相对路径，预览前补全成绝对地址。
+String? resolvePreviewImageUrl(String source, {Uri? baseUrl}) {
+  final trimmed = source.replaceAll('&amp;', '&').trim();
+  if (trimmed.isEmpty) return null;
+  final uri = Uri.tryParse(trimmed);
+  if (uri == null) return null;
+  if (uri.hasScheme) return uri.scheme == 'data' ? null : uri.toString();
+  return (baseUrl ?? Uri.parse(ServiceEndpoints.apiOrigin))
+      .resolveUri(uri)
+      .toString();
+}
+
+/// 简介、公告和脚注等轻量 HTML 的图片点击预览。
+void previewHtmlImage(BuildContext context, ImageMetadata metadata) {
+  for (final source in metadata.sources) {
+    final url = resolvePreviewImageUrl(source.url);
+    if (url == null) continue;
+    unawaited(showImagePreview(context, url: url));
+    return;
+  }
+}
+
+/// 图片预览的触发手势。
+enum ImagePreviewTrigger { tap, longPress }
+
+/// 小说、漫画和富文本共用的内容图片：预留尺寸、BlurHash、加载和预览。
+class ContentImage extends StatelessWidget {
+  const ContentImage({
+    super.key,
+    required this.url,
+    required this.width,
+    required this.height,
+    this.blurHash,
+    this.fit = BoxFit.contain,
+    this.fadeInDuration = const Duration(milliseconds: 120),
+    this.fallbackIcon,
+    this.errorBuilder,
+    this.borderRadius = 0,
+    this.bordered = false,
+    this.trigger = ImagePreviewTrigger.longPress,
+    this.requestSizedVariant = true,
+    this.onPreview,
+  });
+
+  final String url;
+  final double width;
+  final double height;
+  final String? blurHash;
+  final BoxFit fit;
+  final Duration fadeInDuration;
+  final IconData? fallbackIcon;
+  final Widget Function(BuildContext context, VoidCallback retry)? errorBuilder;
+  final double borderRadius;
+  final bool bordered;
+  final ImagePreviewTrigger trigger;
+  final bool requestSizedVariant;
+  final VoidCallback? onPreview;
+
+  @override
+  Widget build(BuildContext context) {
+    // 预览与显示共用这个地址：同一个尺寸档就是同一份缓存，展开时不再重新下载。
+    final requestUrl = requestSizedVariant
+        ? sizedImageUrl(
+            url,
+            logicalHeight: height,
+            devicePixelRatio: MediaQuery.devicePixelRatioOf(context),
+          )
+        : url;
+    Widget image = SizedBox(
+      width: width,
+      height: height,
+      child: BookImage(
+        url: requestUrl,
+        displayHeight: height,
+        blurHash: blurHash,
+        fit: fit,
+        aspectRatio: height / width,
+        fadeInDuration: fadeInDuration,
+        fallbackIcon: fallbackIcon,
+        errorBuilder: errorBuilder,
+        requestSizedVariant: false,
+      ),
+    );
+    if (borderRadius > 0) {
+      image = ClipRRect(
+        borderRadius: BorderRadius.circular(borderRadius),
+        child: image,
+      );
+    }
+    if (bordered) {
+      image = DecoratedBox(
+        position: DecorationPosition.foreground,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(borderRadius),
+          border: Border.all(
+            color: Theme.of(context).colorScheme.outlineVariant,
+          ),
+        ),
+        child: image,
+      );
+    }
+    return Builder(
+      builder: (sourceContext) {
+        void preview() {
+          final onPreview = this.onPreview;
+          if (onPreview != null) {
+            onPreview();
+            return;
+          }
+          unawaited(
+            showImagePreview(
+              sourceContext,
+              url: requestUrl,
+              sourceRect: globalRectOf(sourceContext),
+            ),
+          );
+        }
+
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: trigger == ImagePreviewTrigger.tap ? preview : null,
+          onLongPress: trigger == ImagePreviewTrigger.longPress
+              ? preview
+              : null,
+          child: image,
+        );
+      },
+    );
+  }
+}
+
+/// 预览的变换层，承载进入、退出、下拉的位移与缩放。
+const Key imagePreviewTransformKey = Key('image-preview-transform');
+
+/// 全屏图片预览：复用 BookImage 占位与加载，等比贴合屏幕，支持缩放、下拉关闭及切换原图。
+///
+/// [sourceRect] 是来源缩略图在屏幕上的矩形（[globalRectOf]），缺省时改用居中的淡入淡出加轻微缩放。
+Future<void> showImagePreview(
+  BuildContext context, {
+  required String url,
+  Rect? sourceRect,
+}) => Navigator.of(context, rootNavigator: true).push<void>(
+  PageRouteBuilder<void>(
+    opaque: false,
+    barrierDismissible: false,
+    transitionDuration: const Duration(milliseconds: 280),
+    reverseTransitionDuration: const Duration(milliseconds: 220),
+    pageBuilder: (context, animation, _) =>
+        _ImagePreview(url: url, sourceRect: sourceRect, animation: animation),
+  ),
+);
+
+class _ImagePreview extends ConsumerStatefulWidget {
+  const _ImagePreview({
+    required this.url,
+    required this.sourceRect,
+    required this.animation,
+  });
+
+  final String url;
+  final Rect? sourceRect;
+  final Animation<double> animation;
+
+  /// 下拉关闭的位移阈值（逻辑像素），未达到则弹回。
+  static const double _dismissDistance = 120;
+
+  @override
+  ConsumerState<_ImagePreview> createState() => _ImagePreviewState();
+}
+
+/// 预览工具栏上正在执行的耗时动作，执行中禁用按钮并原地转圈。
+enum _PreviewAction { share, save }
+
+class _ImagePreviewState extends ConsumerState<_ImagePreview>
+    with TickerProviderStateMixin {
+  late final Animation<double> _entry = CurvedAnimation(
+    parent: widget.animation,
+    curve: Curves.easeOutCubic,
+    reverseCurve: Curves.easeInCubic,
+  );
+
+  /// 松手后把拖拽位移弹回原位的控制器。
+  late final AnimationController _settle = AnimationController(
+    duration: const Duration(milliseconds: 220),
+    vsync: this,
+  )..addListener(_onSettle);
+  late final Animation<double> _settleCurve = CurvedAnimation(
+    parent: _settle,
+    curve: Curves.easeOutCubic,
+  );
+
+  Offset _drag = Offset.zero;
+  Offset _settleFrom = Offset.zero;
+
+  /// 按钮旋转固定 90° 一档，动画期间同时改 rotation 和 scale，转完仍是整图可见。
+  late final AnimationController _rotate = AnimationController(
+    duration: const Duration(milliseconds: 200),
+    vsync: this,
+  )..addListener(_onRotate);
+  late final Animation<double> _rotateCurve = CurvedAnimation(
+    parent: _rotate,
+    curve: Curves.easeOutCubic,
+  );
+
+  late String _url = widget.url;
+  String? _originalUrl;
+
+  ImageProvider _providerFor(String url) => CachedNetworkImageProvider(
+    url,
+    cacheKey: BookImage.cacheKeyFor(url),
+    cacheManager: appImageCacheManager,
+  );
+  late final PhotoViewController _photo = PhotoViewController();
+
+  int _quarterTurns = 0;
+  double _rotationFrom = 0;
+  double _rotationTo = 0;
+  double _scaleFrom = 1;
+  double _scaleTo = 1;
+
+  /// 图片原始尺寸，旋转后重算贴合缩放要用。地址里没带尺寸时从解码结果补。
+  Size? _imageSize;
+  ImageStream? _sizeStream;
+  ImageStreamListener? _sizeListener;
+
+  _PreviewAction? _running;
+
+  @override
+  void initState() {
+    super.initState();
+    _imageSize = contentImageMetadata(widget.url).size;
+    final uri = Uri.tryParse(normalizeCoverUrl(widget.url));
+    final height = int.tryParse(uri?.queryParameters['height'] ?? '');
+    final size = _imageSize;
+    if (uri != null &&
+        contentImageMetadata(widget.url).blurHash != null &&
+        size != null &&
+        height != null &&
+        height > 0 &&
+        height % imageHeightStep == 0 &&
+        height < size.height) {
+      final query = Map<String, String>.of(uri.queryParameters)
+        ..remove('height');
+      _originalUrl = uri.replace(queryParameters: query).toString();
+      _imageSize = Size(size.width * height / size.height, height.toDouble());
+    }
+    if (_imageSize == null) _listenImageSize();
+  }
+
+  void _showOriginal() {
+    final url = _originalUrl;
+    if (url == null) return;
+    _rotate.stop();
+    _photo.reset();
+    setState(() {
+      _url = url;
+      _imageSize = contentImageMetadata(url).size;
+      _quarterTurns = 0;
+      _originalUrl = null;
+    });
+  }
+
+  void _listenImageSize() {
+    final listener = ImageStreamListener((info, _) {
+      if (!mounted) return;
+      setState(
+        () => _imageSize = Size(
+          info.image.width.toDouble(),
+          info.image.height.toDouble(),
+        ),
+      );
+    });
+    _sizeListener = listener;
+    _sizeStream = _providerFor(_url).resolve(ImageConfiguration.empty)
+      ..addListener(listener);
+  }
+
+  @override
+  void dispose() {
+    final listener = _sizeListener;
+    if (listener != null) _sizeStream?.removeListener(listener);
+    _rotate.dispose();
+    _photo.dispose();
+    _settle.dispose();
+    super.dispose();
+  }
+
+  void _onRotate() {
+    final t = _rotateCurve.value;
+    _photo
+      ..rotation = ui.lerpDouble(_rotationFrom, _rotationTo, t)!
+      ..scale = ui.lerpDouble(_scaleFrom, _scaleTo, t)!;
+  }
+
+  /// PhotoView 的 scale 是相对原始像素的绝对倍率，这里算旋转后整图可见的那一档。
+  double? _fitScale(Size viewport, int quarterTurns) {
+    final image = _imageSize;
+    if (image == null || image.isEmpty || viewport.isEmpty) return null;
+    final rotated = quarterTurns.isOdd;
+    final width = rotated ? image.height : image.width;
+    final height = rotated ? image.width : image.height;
+    return math.min(viewport.width / width, viewport.height / height);
+  }
+
+  void _rotateBy(int turns, Size viewport) {
+    final from = _quarterTurns;
+    _quarterTurns += turns;
+    _rotationFrom = _photo.rotation;
+    _rotationTo = _quarterTurns * math.pi / 2;
+    _scaleFrom = _photo.scale ?? _fitScale(viewport, from) ?? 1;
+    _scaleTo = _fitScale(viewport, _quarterTurns) ?? _scaleFrom;
+    // 旋转前先归位，否则平移过的图转完会落在屏幕外。
+    _photo.position = Offset.zero;
+    setState(() {});
+    _rotate.forward(from: 0);
+  }
+
+  /// [task] 返回要提示给用户的文案，null 表示不提示。
+  Future<void> _run(
+    _PreviewAction action,
+    Future<String?> Function() task,
+  ) async {
+    if (_running != null) return;
+    setState(() => _running = action);
+    final messenger = ScaffoldMessenger.of(context);
+    final notice = await task();
+    if (notice != null) messenger.showText(notice);
+    if (mounted) setState(() => _running = null);
+  }
+
+  void _onSettle() {
+    setState(() {
+      _drag = Offset.lerp(_settleFrom, Offset.zero, _settleCurve.value)!;
+    });
+  }
+
+  void _onDragStart(DragStartDetails _) {
+    _settle.stop();
+    _settleFrom = Offset.zero;
+  }
+
+  void _onDragUpdate(DragUpdateDetails details) {
+    setState(() => _drag += details.delta);
+  }
+
+  void _onDragEnd(DragEndDetails details) {
+    final velocity = details.velocity.pixelsPerSecond.dy;
+    final dismissed =
+        _drag.dy.abs() >= _ImagePreview._dismissDistance ||
+        velocity.abs() > 700;
+    if (dismissed) {
+      Navigator.of(context).pop();
+      return;
+    }
+    _settleFrom = _drag;
+    _settle.forward(from: 0);
+  }
+
+  /// 进入动画的缩放起点，按来源缩略图与屏幕的尺寸比算。
+  double _beginScale(Size screen) {
+    final rect = widget.sourceRect;
+    if (rect == null || rect.isEmpty || screen.isEmpty) return 0.92;
+    return math
+        .max(rect.width / screen.width, rect.height / screen.height)
+        .clamp(0.05, 1.0);
+  }
+
+  Matrix4 _transform(Size screen, double progress, double dragProgress) {
+    final center = Offset(screen.width / 2, screen.height / 2);
+    final from = widget.sourceRect?.center ?? center;
+    final scale =
+        ui.lerpDouble(_beginScale(screen), 1, progress)! *
+        (1 - 0.2 * dragProgress);
+    final origin = Offset.lerp(from, center, progress)! + _drag;
+    return Matrix4.translationValues(origin.dx, origin.dy, 0) *
+        Matrix4.diagonal3Values(scale, scale, 1) *
+        Matrix4.translationValues(-center.dx, -center.dy, 0);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final screen = MediaQuery.sizeOf(context);
+    final fit = _fitScale(screen, _quarterTurns);
+    final imageSize = _imageSize ?? screen;
+    final image = PhotoViewGestureDetectorScope(
+      axis: Axis.vertical,
+      child: GestureDetector(
+        onVerticalDragStart: _onDragStart,
+        onVerticalDragUpdate: _onDragUpdate,
+        onVerticalDragEnd: _onDragEnd,
+        child: PhotoView.customChild(
+          key: ValueKey(_url),
+          childSize: imageSize,
+          controller: _photo,
+          backgroundDecoration: const BoxDecoration(color: Colors.transparent),
+          initialScale: fit ?? PhotoViewComputedScale.contained,
+          minScale: fit ?? PhotoViewComputedScale.contained,
+          maxScale: PhotoViewComputedScale.covered * 6,
+          onTapUp: (context, _, _) => Navigator.of(context).pop(),
+          child: BookImage(
+            url: _url,
+            displayHeight: imageSize.height,
+            blurHash: contentImageMetadata(_url).blurHash,
+            aspectRatio: imageSize.height / imageSize.width,
+            fit: BoxFit.contain,
+            requestSizedVariant: false,
+          ),
+        ),
+      ),
+    );
+
+    return Scaffold(
+      // 有自己的 Scaffold，工具栏的 SnackBar 才会显示在预览层之上。
+      backgroundColor: Colors.transparent,
+      body: AnimatedBuilder(
+        animation: _entry,
+        builder: (context, child) {
+          final progress = _entry.value.clamp(0.0, 1.0);
+          final dragProgress =
+              (_drag.distance / (_ImagePreview._dismissDistance * 2)).clamp(
+                0.0,
+                1.0,
+              );
+          final chromeOpacity = (progress * (1 - dragProgress)).clamp(0.0, 1.0);
+          return ColoredBox(
+            color: Colors.black.withValues(
+              alpha: 0.96 * progress * (1 - 0.55 * dragProgress),
+            ),
+            child: Stack(
+              children: <Widget>[
+                Positioned.fill(
+                  child: Opacity(
+                    opacity: (progress * (1 - 0.35 * dragProgress)).clamp(
+                      0.0,
+                      1.0,
+                    ),
+                    child: Transform(
+                      key: imagePreviewTransformKey,
+                      transform: _transform(screen, progress, dragProgress),
+                      child: child,
+                    ),
+                  ),
+                ),
+                Positioned(
+                  top: MediaQuery.paddingOf(context).top + 8,
+                  right: 8,
+                  child: Opacity(
+                    opacity: chromeOpacity,
+                    child: IconButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      icon: const Icon(Icons.close),
+                      color: Colors.white,
+                      tooltip: '关闭',
+                    ),
+                  ),
+                ),
+                if (_originalUrl != null)
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: MediaQuery.paddingOf(context).bottom + 76,
+                    child: Opacity(
+                      opacity: chromeOpacity,
+                      child: Center(
+                        child: TextButton(
+                          onPressed: chromeOpacity >= 0.5 && _running == null
+                              ? _showOriginal
+                              : null,
+                          style: TextButton.styleFrom(
+                            foregroundColor: Colors.white,
+                            backgroundColor: Colors.black45,
+                          ),
+                          child: const Text('显示原图'),
+                        ),
+                      ),
+                    ),
+                  ),
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: MediaQuery.paddingOf(context).bottom + 16,
+                  child: Opacity(
+                    opacity: chromeOpacity,
+                    child: IgnorePointer(
+                      ignoring: chromeOpacity < 0.5,
+                      child: _PreviewActionBar(
+                        running: _running,
+                        onRotateLeft: () => _rotateBy(-1, screen),
+                        onRotateRight: () => _rotateBy(1, screen),
+                        onShare: (origin) => _run(
+                          _PreviewAction.share,
+                          () => shareImage(_url, origin: origin),
+                        ),
+                        onSave: () => _run(
+                          _PreviewAction.save,
+                          () => saveImage(
+                            _url,
+                            ownFolder: ref
+                                .read(appSettingsProvider)
+                                .imageSaveToOwnFolder,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+        child: image,
+      ),
+    );
+  }
+}
+
+/// 预览底部的操作条：旋转、分享、保存。
+class _PreviewActionBar extends StatelessWidget {
+  const _PreviewActionBar({
+    required this.running,
+    required this.onRotateLeft,
+    required this.onRotateRight,
+    required this.onShare,
+    required this.onSave,
+  });
+
+  final _PreviewAction? running;
+  final VoidCallback onRotateLeft;
+  final VoidCallback onRotateRight;
+
+  /// iPad 的分享面板要贴着触发按钮弹出，回传按钮在屏幕上的矩形。
+  final void Function(Rect? origin) onShare;
+  final VoidCallback onSave;
+
+  @override
+  Widget build(BuildContext context) => Center(
+    child: DecoratedBox(
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.45),
+        borderRadius: BorderRadius.circular(28),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 4),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            _PreviewActionButton(
+              icon: Icons.rotate_90_degrees_ccw_outlined,
+              tooltip: '向左旋转',
+              onPressed: running == null ? onRotateLeft : null,
+            ),
+            _PreviewActionButton(
+              icon: Icons.rotate_90_degrees_cw_outlined,
+              tooltip: '向右旋转',
+              onPressed: running == null ? onRotateRight : null,
+            ),
+            Builder(
+              builder: (buttonContext) => _PreviewActionButton(
+                icon: Icons.share_outlined,
+                tooltip: '分享',
+                busy: running == _PreviewAction.share,
+                onPressed: running == null
+                    ? () => onShare(globalRectOf(buttonContext))
+                    : null,
+              ),
+            ),
+            _PreviewActionButton(
+              icon: Icons.download_outlined,
+              tooltip: '保存到相册',
+              busy: running == _PreviewAction.save,
+              onPressed: running == null ? onSave : null,
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+class _PreviewActionButton extends StatelessWidget {
+  const _PreviewActionButton({
+    required this.icon,
+    required this.tooltip,
+    required this.onPressed,
+    this.busy = false,
+  });
+
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback? onPressed;
+  final bool busy;
+
+  @override
+  Widget build(BuildContext context) => IconButton(
+    onPressed: onPressed,
+    tooltip: tooltip,
+    color: Colors.white,
+    disabledColor: Colors.white38,
+    icon: busy
+        ? const SizedBox.square(
+            dimension: 20,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: Colors.white,
+            ),
+          )
+        : Icon(icon),
+  );
+}

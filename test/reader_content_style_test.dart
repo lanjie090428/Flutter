@@ -32,6 +32,19 @@ void main() {
     );
   });
 
+  test('自定义正文字体缺字时回退到章节混淆字体', () {
+    const styled = ReaderContentStyle(
+      fontSize: 18,
+      lineHeight: 1.6,
+      firstLineIndent: true,
+      justify: false,
+      fontFamily: 'chapter-font-1',
+      preferredFontFamily: 'ZhuqueFangsong',
+    );
+    expect(styled.textStyle.fontFamily, 'ZhuqueFangsong');
+    expect(styled.textStyle.fontFamilyFallback, <String>['chapter-font-1']);
+  });
+
   test('段间距不改变单行文字行高或 HTML 默认边距', () {
     const spaced = ReaderContentStyle(
       fontSize: 16,

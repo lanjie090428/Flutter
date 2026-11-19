@@ -93,6 +93,10 @@ flutter_native_splash:
 
 flutter:
   uses-material-design: true
+  fonts:
+    - family: ZhuqueFangsong
+      fonts:
+        - asset: assets/fonts/ZhuqueFangsong-Regular.ttf
   assets:
     # 与 Web 端阅读器共用同一组纸纹贴图。
     - assets/img/bg-paper.jpg

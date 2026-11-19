@@ -93,6 +93,7 @@ void main() {
   testWidgets('小说设置只显示小说选项', (tester) async {
     await _pumpSettings(tester, const AppSettings());
 
+    expect(find.text('正文字体'), findsOneWidget);
     expect(find.text('字号'), findsOneWidget);
     expect(find.text('章节标题'), findsOneWidget);
     expect(find.text('预渲染前后章节'), findsOneWidget);

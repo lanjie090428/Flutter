@@ -14,6 +14,7 @@ class ReaderContentStyle {
     required this.justify,
     this.lineSpace = 0,
     this.fontFamily,
+    this.preferredFontFamily,
   });
 
   /// 正文基准字号（逻辑像素）。
@@ -31,13 +32,22 @@ class ReaderContentStyle {
   /// 普通正文段落是否两端对齐。
   final bool justify;
 
-  /// 章节混淆字体族名，null 用系统字体。
+  /// 章节混淆字体族名，负责绘制服务端映射的字形。
   final String? fontFamily;
+
+  /// 用户选择的常规字体；缺少混淆字符时回退到章节字体。
+  final String? preferredFontFamily;
 
   /// 正文色不在这里：颜色只影响绘制，掺进来会让亮暗切换等于排版参数变更，整章
   /// 重建并重新分页。颜色由外层 `DefaultTextStyle` 提供。
-  TextStyle get textStyle =>
-      TextStyle(fontSize: fontSize, height: lineHeight, fontFamily: fontFamily);
+  TextStyle get textStyle => TextStyle(
+    fontSize: fontSize,
+    height: lineHeight,
+    fontFamily: preferredFontFamily ?? fontFamily,
+    fontFamilyFallback: preferredFontFamily != null && fontFamily != null
+        ? <String>[fontFamily!]
+        : null,
+  );
 
   /// `<font size="1..7">` 的历史换算表，与简介渲染器共用一套倍率。
   static const List<double> _fontTagSizes = <double>[
@@ -221,7 +231,8 @@ class ReaderContentStyle {
       other.lineSpace == lineSpace &&
       other.firstLineIndent == firstLineIndent &&
       other.justify == justify &&
-      other.fontFamily == fontFamily;
+      other.fontFamily == fontFamily &&
+      other.preferredFontFamily == preferredFontFamily;
 
   @override
   int get hashCode => Object.hash(
@@ -231,5 +242,6 @@ class ReaderContentStyle {
     firstLineIndent,
     justify,
     fontFamily,
+    preferredFontFamily,
   );
 }

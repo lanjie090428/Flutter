@@ -286,6 +286,10 @@ class _NovelReaderScreenState extends ConsumerState<NovelReaderScreen>
         firstLineIndent: settings.readerFirstLineIndent,
         justify: settings.readerJustify,
         fontFamily: fontFamily,
+        preferredFontFamily: switch (settings.novelReader.font) {
+          ReaderFontSetting.system => null,
+          ReaderFontSetting.zhuqueFangsong => 'ZhuqueFangsong',
+        },
       );
 
   ReaderChapterContent? _chapterContent(
