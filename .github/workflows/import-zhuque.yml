@@ -1,0 +1,35 @@
+name: Import Zhuque Fangsong Source
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Extract modified source
+        run: |
+          mkdir extracted
+          unzip -q Flutter-main-ZhuqueFangsong.zip -d extracted
+          SOURCE="extracted/Flutter-main"
+          test -f "$SOURCE/pubspec.yaml"
+          test -f "$SOURCE/assets/fonts/ZhuqueFangsong-Regular.ttf"
+          cp -a "$SOURCE/." .
+
+      - name: Commit modified source
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "Add Zhuque Fangsong reader font"
+            git push origin main
+          fi
