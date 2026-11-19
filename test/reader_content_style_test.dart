@@ -32,7 +32,7 @@ void main() {
     );
   });
 
-  test('自定义正文字体缺字时回退到章节混淆字体', () {
+  test('正文优先使用章节混淆字体，避免自定义字体破坏字形映射', () {
     const styled = ReaderContentStyle(
       fontSize: 18,
       lineHeight: 1.6,
@@ -41,8 +41,8 @@ void main() {
       fontFamily: 'chapter-font-1',
       preferredFontFamily: 'ZhuqueFangsong',
     );
-    expect(styled.textStyle.fontFamily, 'ZhuqueFangsong');
-    expect(styled.textStyle.fontFamilyFallback, <String>['chapter-font-1']);
+    expect(styled.textStyle.fontFamily, 'chapter-font-1');
+    expect(styled.textStyle.fontFamilyFallback, isNull);
   });
 
   test('段间距不改变单行文字行高或 HTML 默认边距', () {
@@ -179,6 +179,7 @@ void main() {
     // em10 是空档，不该被当成相对字号。
     expect(_styles(classes: const ['em10']), isNull);
   });
+
   test('两端对齐只作用于普通正文，显式对齐 class 优先', () {
     const justified = ReaderContentStyle(
       fontSize: 18,
