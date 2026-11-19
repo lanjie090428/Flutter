@@ -4,8 +4,7 @@ import 'html_source.dart';
 
 /// 正文 class/标签的排版语义由本文件维护。
 
-/// 正文样式来源。`stylesFor` 的返回值直接交给 HtmlWidget 的 `customStylesBuilder`，
-/// 因此取值必须是它能解析的 CSS：`px`/`em`/`%` 长度、`bold`、`italic`、`center`、`#RRGGBB` 等。
+/// 正文样式来源。
 class ReaderContentStyle {
   const ReaderContentStyle({
     required this.fontSize,
@@ -17,39 +16,24 @@ class ReaderContentStyle {
     this.preferredFontFamily,
   });
 
-  /// 正文基准字号（逻辑像素）。
   final double fontSize;
-
-  /// 行高倍数。
   final double lineHeight;
-
-  /// 段落级文本块之后的额外间距（逻辑像素）。
   final double lineSpace;
-
-  /// 段首缩进 2em。
   final bool firstLineIndent;
-
-  /// 普通正文段落是否两端对齐。
   final bool justify;
 
   /// 章节混淆字体族名，负责绘制服务端映射的字形。
   final String? fontFamily;
 
-  /// 用户选择的常规字体；缺少混淆字符时回退到章节字体。
+  /// 用户选择的常规字体，暂时不参与正文渲染。
   final String? preferredFontFamily;
 
-  /// 正文色不在这里：颜色只影响绘制，掺进来会让亮暗切换等于排版参数变更，整章
-  /// 重建并重新分页。颜色由外层 `DefaultTextStyle` 提供。
   TextStyle get textStyle => TextStyle(
     fontSize: fontSize,
     height: lineHeight,
-    fontFamily: preferredFontFamily ?? fontFamily,
-    fontFamilyFallback: preferredFontFamily != null && fontFamily != null
-        ? <String>[fontFamily!]
-        : null,
+    fontFamily: fontFamily,
   );
 
-  /// `<font size="1..7">` 的历史换算表，与简介渲染器共用一套倍率。
   static const List<double> _fontTagSizes = <double>[
     0.63,
     0.82,
@@ -60,7 +44,6 @@ class ReaderContentStyle {
     3,
   ];
 
-  /// 这些 class 在原 CSS 里带 `text-indent: 0`，段首不缩进。
   static const Set<String> _indentCancelling = <String>{
     htmlImageBlockClass,
     'center',
@@ -75,7 +58,6 @@ class ReaderContentStyle {
     'ph4',
   };
 
-  /// HtmlWidget 不解析 `text-indent`，段首缩进由调用方往正文里插全角空格，此处只做判定。
   bool indentsParagraph({
     required String? tag,
     required Iterable<String> classes,
@@ -104,7 +86,6 @@ class ReaderContentStyle {
       case 'h4':
         styles.addAll(_subheading());
       case 'a':
-        // 颜色继承正文色，只去掉下划线。
         styles['text-decoration'] = 'none';
       case 'img':
         styles['max-width'] = '100%';
@@ -124,7 +105,6 @@ class ReaderContentStyle {
         }
     }
 
-    // class 后写，命中同一属性时覆盖标签默认值。
     for (final className in classes) {
       switch (className) {
         case htmlImageBlockClass:
@@ -179,8 +159,6 @@ class ReaderContentStyle {
           styles['color'] = '#FFFFFF';
         case 'dot':
         case 'em-dot':
-          // 0.17.2 的解析器只认 text-emphasis / -color / -style，标记恒画在字上方，
-          // 不支持 text-emphasis-position。
           styles['text-emphasis'] = 'circle';
         case 'pius1':
         case 'pius2':
@@ -198,7 +176,6 @@ class ReaderContentStyle {
     return styles.isEmpty ? null : styles;
   }
 
-  /// 标题字号要跟 `line-height` 一起定死，用 em 会被外层相对字号二次放大。
   Map<String, String> _heading(double scale) => <String, String>{
     'font-size': _px(fontSize * scale),
     'font-weight': 'bold',
@@ -215,7 +192,6 @@ class ReaderContentStyle {
 
   static String _px(double size) => '${size.toStringAsFixed(2)}px';
 
-  /// 站内自造的 `em05`…`em30` 类名表示相对字号（跳过 em10）。
   static double? _emScale(String className) {
     if (className.length != 4 || !className.startsWith('em')) return null;
     final value = int.tryParse(className.substring(2));
